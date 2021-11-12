@@ -43,7 +43,8 @@ from shinysdr.i.db import DatabaseModel, database_from_csv, databases_from_direc
 from shinysdr.i.network.base import UNIQUE_PUBLIC_CAP
 from shinysdr.i.pycompat import bytes_or_ascii, repr_no_string_tag
 from shinysdr.i.roots import CapTable, generate_cap
-
+# For debugging only
+#import debugpy
 
 __all__ = []  # appended later
 
@@ -136,6 +137,9 @@ class Config(object):
                 raise ConfigException('config.serve_web: root_cap must be None or a nonempty string')
         
         def make_service(app):
+            # debugpy.listen(5678)
+            # debugpy.wait_for_client()
+
             # TODO: Temporary glue while we refactor for multisession
             session = app.get_session()
             cap_table = CapTable(lambda bogus: bogus)
@@ -155,7 +159,8 @@ class Config(object):
                 http_base_url=http_base_url,
                 ws_base_url=ws_base_url,
                 root_cap=root_cap_subst,
-                title=title)
+                title=title,
+                app=app)
         
         self._service_makers.append(make_service)
 

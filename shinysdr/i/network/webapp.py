@@ -18,13 +18,15 @@
 """Code defining the API that is actually exposed over HTTP."""
 
 from __future__ import absolute_import, division, print_function, unicode_literals
+from logging import root
 
 import os
 
 import six
 from six.moves import urllib
 from six.moves.urllib.parse import urljoin
-
+from shinysdr.i import session
+from shinysdr.i.roots import IEntryPoint
 from twisted.application.service import Service
 from twisted.internet import defer
 from twisted.internet import endpoints
@@ -49,7 +51,6 @@ from shinysdr.interfaces import _IClientResourceDef
 from shinysdr.twisted_ext import FactoryWithArgs
 from shinysdr.values import SubscriptionContext
 
-
 def _make_static_resource(pathname):
     # str() because if we happen to pass unicode as the pathname then directory listings break (discovered with Twisted 16.4.1).
     r = static.File(str(pathname),
@@ -71,13 +72,16 @@ class WebService(Service):
             http_base_url,
             ws_base_url,
             root_cap,
-            title):
+            title,
+            app):
+        
         # Constants
         self.__http_endpoint_string = str(http_endpoint)
         self.__http_endpoint = endpoints.serverFromString(reactor, self.__http_endpoint_string)
         self.__ws_endpoint = endpoints.serverFromString(reactor, str(ws_endpoint))
         self.__visit_path = _make_cap_url(root_cap)
         self.__http_base_url_if_explicit = http_base_url
+        self.__app = app
         
         wcommon = WebServiceCommon(
             reactor=reactor,
@@ -90,9 +94,23 @@ class WebService(Service):
         def resource_factory(entry_point):
             # TODO: If not an IWebEntryPoint, return a generic result
             return IWebEntryPoint(entry_point).get_entry_point_resource(wcommon=wcommon)  # pylint: disable=redundant-keyword-arg
-        
-        server_root = CapAccessResource(cap_table=cap_table, resource_factory=resource_factory)
-        _put_root_static(wcommon, server_root)
+
+        # Custom logic to place content under URL cap. This version supports caps with multiple URL segments (slashes)
+        # Bypasses the ShinySDR CapTable concept in favor of Twisted Resource system.
+        cap_segments = root_cap.split('/')
+        server_root = Resource()
+        prev_resource = server_root
+        for idx, segment in enumerate(cap_segments):
+            if segment:
+                current_resource = None
+                if idx == len(cap_segments) - 1:
+                    current_resource = IWebEntryPoint(IEntryPoint(self.__app.get_session())).get_entry_point_resource(wcommon=wcommon)
+                else:
+                    current_resource = Resource()
+                prev_resource.putChild(segment, current_resource)
+                prev_resource = current_resource
+
+        _put_root_static(wcommon, prev_resource)
         
         if UNIQUE_PUBLIC_CAP in cap_table:
             # TODO: consider factoring out "generate URL for cap"
@@ -156,7 +174,7 @@ class WebService(Service):
 def _put_root_static(wcommon, container_resource):
     """Place all the simple resources, that are not necessarily sourced from files but at least are unchanging and public."""
     
-    for name in ['', 'client', 'test', 'manual', 'tools']:
+    for name in ['client', 'test', 'manual', 'tools']:
         container_resource.putChild(name, _make_static_resource(os.path.join(static_resource_path, name if name != '' else 'index.html')))
     
     # Link deps into /client/.
@@ -192,7 +210,7 @@ def _put_plugin_resources(wcommon, client_resource):
     for resource_def in getPlugins(_IClientResourceDef, shinysdr.plugins):
         # Add the plugin's resource to static serving
         plugin_resources.putChild(resource_def.key, resource_def.resource)
-        plugin_resource_url = '/client/plugins/' + urllib.parse.quote(resource_def.key, safe='') + '/'
+        plugin_resource_url = 'client/plugins/' + urllib.parse.quote(resource_def.key, safe='') + '/'
         # Tell the client to load the plugins
         # TODO constrain path values to be relative (not on a different origin, to not leak urls)
         if resource_def.load_css_path is not None:
@@ -274,4 +292,4 @@ class WebAppManifestResource(Resource):
 
 def _make_cap_url(cap):
     assert isinstance(cap, six.text_type)
-    return defaultstr('/' + urllib.parse.quote(cap.encode('utf-8'), safe='') + '/')
+    return defaultstr('/' + cap + '/')
